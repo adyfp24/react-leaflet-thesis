@@ -1,39 +1,41 @@
-// src/components/JemberCoastlineViewer.tsx
 import React, { useEffect, useRef, useState } from "react";
 
-declare const turf: any;
+declare global {
+  interface Window {
+    L: any;
+  }
+}
 
 const GisMap: React.FC = () => {
   const mapRef = useRef<HTMLDivElement | null>(null);
-  const leafletMapRef = useRef<any>(null);
+  const mapInstance = useRef<any>(null);
   const baseLayerRef = useRef<any>(null);
 
-  // Toggles
+  // UI State
   const [showCoastline, setShowCoastline] = useState(true);
   const [showTileBox, setShowTileBox] = useState(true);
   const [showSeaLevelRise, setShowSeaLevelRise] = useState(false);
-
-  // Tahun forecasting
-  const [year, setYear] = useState<number>(2025);
-
-  // Basemap state
+  const [year, setYear] = useState(2040);
   const [basemap, setBasemap] = useState<"satellite" | "osm">("satellite");
 
-  // Papuma center
-  const papuma: [number, number] = [-8.4306, 113.8428];
+  // Study area (MATCH DATASET SLA)
+  const tileBounds = {
+    north: -8.427068113123065,
+    south: -8.616956880254662,
+    west: 113.53192284124258,
+    east: 113.73236098432594,
+  };
 
-  // Tile metadata
-  const tileBounds = { north: -8, south: -9, west: 113, east: 114 };
-
-  // Helpers
+  // -------------------------
+  // Utils
+  // -------------------------
   const loadScript = (src: string) =>
     new Promise<void>((resolve, reject) => {
       if (document.querySelector(`script[src="${src}"]`)) return resolve();
       const s = document.createElement("script");
       s.src = src;
-      s.async = true;
       s.onload = () => resolve();
-      s.onerror = () => reject(new Error("Failed load script: " + src));
+      s.onerror = () => reject();
       document.head.appendChild(s);
     });
 
@@ -45,81 +47,57 @@ const GisMap: React.FC = () => {
     document.head.appendChild(l);
   };
 
-  // Dummy rule: buffer per tahun
-  const getBufferForYear = (y: number) => {
-    return 0.5 + (y - 2025) * 0.2; // misal linear growth
-  };
-
-  // Update sea level rise layer
-  const updateSeaRiseLayer = (map: any, year: number) => {
+  // -------------------------
+  // REAL SLR INUNDATION (API)
+  // -------------------------
+  const fetchInundationLayer = async (map: any, year: number) => {
     try {
-      const coastGeo = (map as any)._coastlineGeojson;
-      if (!coastGeo || !(window as any).turf) return;
+      const res = await fetch(
+        `http://127.0.0.1:5000/api/inundation?year=${year}`
+      );
 
-      const bufKm = getBufferForYear(year);
+      if (!res.ok) throw new Error("Failed to fetch inundation");
 
-      const buffered = (window as any).turf.buffer(coastGeo, bufKm, {
-        units: "kilometers",
-      });
+      const geojson = await res.json();
 
-      const papumaLonLat = [papuma[1], papuma[0]];
-      const aoiCircle = (window as any).turf.circle(papumaLonLat, 25, {
-        units: "kilometers",
-      });
-
-      let impact = null;
-      try {
-        impact = (window as any).turf.intersect(buffered, aoiCircle);
-      } catch {
-        impact = buffered;
+      if (map._seaLevelLayer) {
+        map.removeLayer(map._seaLevelLayer);
+        map._seaLevelLayer = null;
       }
 
-      if ((map as any)._seaRiseLayer) {
-        map.removeLayer((map as any)._seaRiseLayer);
-        (map as any)._seaRiseLayer = null;
-      }
+      map._seaLevelLayer = window.L.geoJSON(geojson, {
+        style: {
+          fillColor: "#dc2626",
+          fillOpacity: 0.45,
+          weight: 0,
+        },
+      }).addTo(map);
 
-      if (impact) {
-        const seaLayer = (window as any).L.geoJSON(impact, {
-          style: {
-            color: "red",
-            weight: 0,
-            fillColor: "red",
-            fillOpacity: 0.4,
-          },
-        }).addTo(map);
-
-        (map as any)._seaRiseLayer = seaLayer;
-      }
     } catch (err) {
-      console.error("Failed updateSeaRiseLayer:", err);
+      console.error("Inundation fetch error:", err);
     }
   };
 
-  // Init map
+  // -------------------------
+  // INIT MAP
+  // -------------------------
   useEffect(() => {
     if (!mapRef.current) return;
-    const load = async () => {
+
+    const init = async () => {
       loadCSS("https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css");
-      if (!(window as any).L) {
-        await loadScript("https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js");
-      }
-      if (!(window as any).turf) {
-        await loadScript("https://cdn.jsdelivr.net/npm/@turf/turf@6.5.0/turf.min.js");
-      }
+      await loadScript("https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js");
 
-      const L = (window as any).L;
+      const L = window.L;
       const map = L.map(mapRef.current);
-      leafletMapRef.current = map;
+      mapInstance.current = map;
 
-      // Initial basemap
-      const defaultLayer = L.tileLayer(
+      baseLayerRef.current = L.tileLayer(
         "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
         { attribution: "Esri" }
       ).addTo(map);
 
-      baseLayerRef.current = defaultLayer;
-
+      // Tile boundary
       const tilePoly = L.polygon(
         [
           [tileBounds.north, tileBounds.west],
@@ -127,212 +105,176 @@ const GisMap: React.FC = () => {
           [tileBounds.south, tileBounds.east],
           [tileBounds.south, tileBounds.west],
         ],
-        { color: "#9900cc", weight: 2, dashArray: "6,4", fillOpacity: 0.02 }
+        { color: "#7e22ce", dashArray: "6,4", fillOpacity: 0 }
       ).addTo(map);
 
-      (map as any)._tilePoly = tilePoly;
-      map.fitBounds(tilePoly.getBounds(), { padding: [40, 40] });
+      map._tilePoly = tilePoly;
+      map.fitBounds(tilePoly.getBounds());
 
+      // Fetch coastline (Overpass)
       const pad = 0.05;
       const query = `
-        [out:json][timeout:25];
-        (
-          way["natural"="coastline"](${tileBounds.south - pad},${tileBounds.west - pad},${tileBounds.north + pad},${tileBounds.east + pad});
-          relation["natural"="coastline"](${tileBounds.south - pad},${tileBounds.west - pad},${tileBounds.north + pad},${tileBounds.east + pad});
-        );
-        out body; >; out skel qt;
+        [out:json];
+        way["natural"="coastline"](${tileBounds.south - pad},${tileBounds.west - pad},
+                                   ${tileBounds.north + pad},${tileBounds.east + pad});
+        out geom;
       `;
 
-      try {
-        const res = await fetch("https://overpass-api.de/api/interpreter", {
-          method: "POST",
-          headers: { "Content-Type": "application/x-www-form-urlencoded" },
-          body: new URLSearchParams({ data: query }).toString(),
-        });
-        const osmJson = await res.json();
-        const geojson = overpassToGeoJSON(osmJson);
+      const res = await fetch("https://overpass-api.de/api/interpreter", {
+        method: "POST",
+        body: new URLSearchParams({ data: query }),
+      });
 
-        (map as any)._coastlineGeojson = geojson;
+      const json = await res.json();
+      const geojson = overpassToGeoJSON(json);
 
-        const coastlineLayer = L.geoJSON(geojson, {
-          style: { color: "#0066cc", weight: 2 },
-        }).addTo(map);
-
-        (map as any)._coastline = coastlineLayer;
-
-        updateSeaRiseLayer(map, year);
-      } catch (err) {
-        console.error("Failed to fetch coastline:", err);
-      }
+      map._coastlineLayer = L.geoJSON(geojson, {
+        style: { color: "#2563eb", weight: 2 },
+      }).addTo(map);
     };
-    load();
+
+    init();
 
     return () => {
-      if (leafletMapRef.current) {
-        leafletMapRef.current.remove();
-        leafletMapRef.current = null;
-      }
+      mapInstance.current?.remove();
+      mapInstance.current = null;
     };
   }, []);
 
-  // Handle basemap switch
+  // -------------------------
+  // Toggle layers
+  // -------------------------
   useEffect(() => {
-    const map = leafletMapRef.current;
+    const map = mapInstance.current;
     if (!map) return;
 
-    const L = (window as any).L;
-    if (baseLayerRef.current) {
-      map.removeLayer(baseLayerRef.current);
+    if (map._coastlineLayer) {
+      showCoastline
+        ? map.addLayer(map._coastlineLayer)
+        : map.removeLayer(map._coastlineLayer);
     }
 
-    let newLayer;
-    if (basemap === "satellite") {
-      newLayer = L.tileLayer(
-        "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-        { attribution: "Esri" }
-      );
-    } else {
-      newLayer = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-        attribution: "&copy; OpenStreetMap contributors",
-      });
+    if (map._tilePoly) {
+      showTileBox
+        ? map.addLayer(map._tilePoly)
+        : map.removeLayer(map._tilePoly);
     }
+  }, [showCoastline, showTileBox]);
 
-    newLayer.addTo(map);
-    baseLayerRef.current = newLayer;
-  }, [basemap]);
-
-  // Update SLR when toggles or year changes
+  // -------------------------
+  // Sea Level Rise (REAL API)
+  // -------------------------
   useEffect(() => {
-    const map = leafletMapRef.current;
+    const map = mapInstance.current;
     if (!map) return;
 
     if (showSeaLevelRise) {
-      updateSeaRiseLayer(map, year);
-    } else if ((map as any)._seaRiseLayer) {
-      map.removeLayer((map as any)._seaRiseLayer);
-      (map as any)._seaRiseLayer = null;
+      fetchInundationLayer(map, year);
+    } else if (map._seaLevelLayer) {
+      map.removeLayer(map._seaLevelLayer);
+      map._seaLevelLayer = null;
     }
   }, [showSeaLevelRise, year]);
 
+  // -------------------------
+  // Basemap switch
+  // -------------------------
+  useEffect(() => {
+    const map = mapInstance.current;
+    if (!map) return;
+
+    map.removeLayer(baseLayerRef.current);
+
+    const L = window.L;
+    baseLayerRef.current =
+      basemap === "satellite"
+        ? L.tileLayer(
+          "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
+        )
+        : L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png");
+
+    baseLayerRef.current.addTo(map);
+  }, [basemap]);
+
+  // -------------------------
+  // Update SLR layer on year change
+  // -------------------------
+  useEffect(() => {
+    const map = mapInstance.current;
+    if (!map) return;
+
+    if (showSeaLevelRise) {
+      fetchInundationLayer(map, year);
+    } else if (map._seaLevelLayer) {
+      map.removeLayer(map._seaLevelLayer);
+      map._seaLevelLayer = null;
+    }
+
+  }, [showSeaLevelRise, year]);
+
+
+  // -------------------------
+  // UI
+  // -------------------------
   return (
     <div className="w-full h-screen bg-gray-900 text-white">
-      {/* Header */}
       <div className="p-3 bg-gray-800 flex gap-4 items-center">
-        <h2 className="text-md max-w-3xl break-words">
-          Sea Level Rise Prediction with Hybrid STL Decomposition–LSTM Model
-          and GIS-Based Mapping of Affected Areas along the Coastline of Jember Regency
-        </h2>
+        <strong className="text-sm">
+          GIS-based Bathtub Inundation (Hybrid STL–LSTM Forecast)
+        </strong>
 
-        <div className="ml-auto flex gap-6 items-center">
-          {/* Basemap selector */}
-
-          <label className="flex items-center gap-2">
-            <input type="checkbox" checked={showCoastline} onChange={() => setShowCoastline(s => !s)} />
-            <span className="text-sm">Coastline</span>
-          </label>
-          <label className="flex items-center gap-2">
-            <input type="checkbox" checked={showTileBox} onChange={() => setShowTileBox(s => !s)} />
-            <span className="text-sm">SRTM Tile Box</span>
-          </label>
-          <label className="flex items-center gap-2">
-            <input type="checkbox" checked={showSeaLevelRise} onChange={() => setShowSeaLevelRise(s => !s)} />
-            <span className="text-sm">SLR Simulation</span>
+        <div className="ml-auto flex gap-4 items-center text-sm">
+          <label>
+            <input type="checkbox" checked={showCoastline}
+              onChange={() => setShowCoastline(!showCoastline)} /> Coastline
           </label>
 
-          <div className="flex items-center gap-2">
-            <span className="text-sm">Basemap:</span>
-            <select
-              value={basemap}
-              onChange={(e) => setBasemap(e.target.value as "satellite" | "osm")}
-              className="text-white px-2 py-1 rounded bg-gray-700"
-            >
-              <option value="satellite">Satellite (Esri)</option>
-              <option value="osm">OpenStreetMap</option>
-            </select>
-          </div>
+          <label>
+            <input type="checkbox" checked={showTileBox}
+              onChange={() => setShowTileBox(!showTileBox)} /> AOI
+          </label>
 
-          {/* Dropdown tahun */}
-          <div className="flex items-center gap-2">
-            <span className="text-sm">Year:</span>
-            <select
-              value={year}
-              onChange={(e) => setYear(Number(e.target.value))}
-              className="text-white px-2 py-1 rounded bg-gray-700"
-            >
-              {Array.from({ length: 26 }, (_, i) => 2025 + i).map(y => (
-                <option key={y} value={y}>{y}</option>
-              ))}
-            </select>
-          </div>
+          <label>
+            <input type="checkbox" checked={showSeaLevelRise}
+              onChange={() => setShowSeaLevelRise(!showSeaLevelRise)} /> SLR
+          </label>
+
+          <select value={year} onChange={e => setYear(+e.target.value)}
+            className="bg-gray-700 px-2">
+            {Array.from({ length: 26 }, (_, i) => 2025 + i)
+              .map(y => <option key={y}>{y}</option>)}
+          </select>
+
+          <select value={basemap}
+            onChange={e => setBasemap(e.target.value as any)}
+            className="bg-gray-700 px-2">
+            <option value="satellite">Satellite</option>
+            <option value="osm">OSM</option>
+          </select>
         </div>
       </div>
 
-      {/* Map Container */}
-      <div className="flex-1 h-[calc(100vh-120px)] relative">
-        <div ref={mapRef} className="w-full h-full" />
-
-        {/* Legend */}
-        <div className="absolute bottom-4 left-4 bg-white/95 text-black p-4 rounded-lg shadow-lg max-w-xs z-[1000]">
-          <div className="font-semibold mb-2">Legend</div>
-          <div className="space-y-1 text-sm">
-            <div className="flex items-center gap-2">
-              <div className="w-4 h-[2px] bg-blue-600"></div>
-              <span>Coastline</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <div className="w-4 h-[2px] border-b-2 border-dashed border-purple-700"></div>
-              <span>SRTM Tile Box</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <div className="w-4 h-2 bg-red-500 opacity-70"></div>
-              <span>SLR Simulation</span>
-            </div>
-          </div>
-        </div>
-
-        {/* Info Panel */}
-        <div className="absolute top-28 left-4 bg-white/95 text-black p-4 rounded-lg shadow-lg max-w-sm z-[1000]">
-          <div className="font-semibold mb-2">Study Area Info</div>
-          <div className="text-sm space-y-1">
-            <div><strong>Center:</strong> Pantai Papuma</div>
-            <div><strong>Coordinates:</strong> {papuma[0].toFixed(4)}°S, {papuma[1].toFixed(4)}°E</div>
-            <div><strong>Location:</strong> Desa Lojejer, Wuluhan</div>
-            <div><strong>Radius:</strong> 25 km buffer zone</div>
-            <div><strong>Forecast Year:</strong> {year}</div>
-            {showSeaLevelRise && (
-              <div className="mt-2 text-red-600 font-medium text-sm">
-                ⚠ Potential area affected by sea level rise ({year})
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
+      <div ref={mapRef} className="w-full h-[calc(100vh-56px)]" />
     </div>
   );
 };
 
 export default GisMap;
 
-function overpassToGeoJSON(overpassJson: any) {
-  const nodes: Record<string, [number, number]> = {};
-  (overpassJson.elements || []).forEach((el: any) => {
-    if (el.type === "node") nodes[el.id] = [el.lat, el.lon];
-  });
-
-  const features: any[] = [];
-  (overpassJson.elements || []).forEach((el: any) => {
-    if (el.type === "way") {
-      const coords = (el.nodes || [])
-        .map((nid: number) => nodes[nid] && [nodes[nid][1], nodes[nid][0]])
-        .filter(Boolean);
-      if (coords.length)
-        features.push({
-          type: "Feature",
-          geometry: { type: "LineString", coordinates: coords },
-          properties: el.tags || {},
-        });
-    }
-  });
+// -------------------------
+// Overpass → GeoJSON
+// -------------------------
+function overpassToGeoJSON(data: any) {
+  const features = (data.elements || [])
+    .filter((el: any) => el.type === "way" && el.geometry)
+    .map((el: any) => ({
+      type: "Feature",
+      geometry: {
+        type: "LineString",
+        coordinates: el.geometry.map((p: any) => [p.lon, p.lat]),
+      },
+      properties: el.tags || {},
+    }));
 
   return { type: "FeatureCollection", features };
 }
