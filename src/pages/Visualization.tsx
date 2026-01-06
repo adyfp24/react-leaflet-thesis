@@ -10,6 +10,8 @@ import {
   Legend,
 } from "recharts";
 import { motion } from "framer-motion";
+import { NavLink, useLocation } from "react-router-dom";
+import { MapPin } from "lucide-react";
 
 interface SLRData {
   year: number;
@@ -18,15 +20,36 @@ interface SLRData {
 }
 
 const Visualization: React.FC = () => {
+  const location = useLocation();
+
   const [data, setData] = useState<SLRData[]>([]);
+  const [animatedData, setAnimatedData] = useState<SLRData[]>([]);
+  const [chartKey, setChartKey] = useState(0);
   const [loading, setLoading] = useState(true);
 
+  // ===============================
+  // FETCH DATA (HANYA SEKALI)
+  // ===============================
   useEffect(() => {
     fetch("http://127.0.0.1:5000/api/slr/timeseries")
       .then((res) => res.json())
-      .then((json) => {
+      .then((json: SLRData[]) => {
         setData(json);
+
+        // initial zero data
+        const zeroData = json.map((d) => ({
+          ...d,
+          kenaikan_tahunan_mm: 0,
+          kenaikan_kumulatif_mm: 0,
+        }));
+
+        setAnimatedData(zeroData);
         setLoading(false);
+
+        // animate first load
+        setTimeout(() => {
+          setAnimatedData(json);
+        }, 120);
       })
       .catch((err) => {
         console.error("Failed to load SLR data:", err);
@@ -34,10 +57,33 @@ const Visualization: React.FC = () => {
       });
   }, []);
 
+  // ===============================
+  // RE-ANIMATE SAAT BALIK KE HALAMAN
+  // ===============================
+  useEffect(() => {
+    if (data.length === 0) return;
+
+    const zeroData = data.map((d) => ({
+      ...d,
+      kenaikan_tahunan_mm: 0,
+      kenaikan_kumulatif_mm: 0,
+    }));
+
+    // reset data & force remount chart
+    setAnimatedData(zeroData);
+    setChartKey((k) => k + 1);
+
+    const t = setTimeout(() => {
+      setAnimatedData(data);
+    }, 120);
+
+    return () => clearTimeout(t);
+  }, [location.pathname]);
+
   return (
     <div className="w-full min-h-screen bg-gray-900 text-white flex flex-col">
       {/* 🔹 Navbar */}
-      <div className="p-3 bg-gray-800 flex gap-4 items-center shadow-md">
+      {/* <div className="p-3 bg-gray-800 flex gap-4 items-center shadow-md">
         <h2 className="text-md max-w-3xl">
           Sistem Prediksi Kenaikan Muka Air Laut Berbasis Hybrid STL–LSTM
           (Pesisir Kabupaten Jember)
@@ -48,9 +94,55 @@ const Visualization: React.FC = () => {
           <a href="/" className="hover:text-cyan-400">🏠 Beranda</a>
         </div>
       </div>
+       */}
 
+      {/* HEADER */}
+      {/* HEADER */}
+      <div className="absolute top-0 left-0 right-0 z-50 bg-gray-900/95 p-4 backdrop-blur border-b-2 border-yellow-900 shadow-md">
+        <div className="max-w-7xl mx-auto flex items-center justify-between">
+
+          {/* LEFT : TITLE */}
+          <div className="flex items-center gap-2">
+            <MapPin className="text-purple-400" />
+            <div>
+              <h1 className="text-xl font-bold">Sea Level Rise Simulation</h1>
+              <p className="text-xs text-gray-400">
+                NASADEM (GEE) | Kabupaten Jember
+              </p>
+            </div>
+          </div>
+
+          {/* RIGHT : NAVIGATION */}
+          <nav className="flex items-center gap-6 text-sm font-medium">
+            <NavLink
+              to="/gis-map"
+              className={({ isActive }) =>
+                `transition-colors ${isActive
+                  ? "text-purple-400 border-b-2 border-purple-400 pb-1"
+                  : "text-gray-300 hover:text-white"
+                }`
+              }
+            >
+              GIS Map
+            </NavLink>
+
+            <NavLink
+              to="/visualization"
+              className={({ isActive }) =>
+                `transition-colors ${isActive
+                  ? "text-purple-400 border-b-2 border-purple-400 pb-1"
+                  : "text-gray-300 hover:text-white"
+                }`
+              }
+            >
+              Time Series Visualization
+            </NavLink>
+          </nav>
+
+        </div>
+      </div>
       {/* 🔹 Konten */}
-      <div className="flex-1 p-6 flex flex-col md:flex-row gap-6">
+      <div className="flex-1 mt-20 p-6 flex flex-col md:flex-row gap-6">
         {/* Chart */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
@@ -66,7 +158,7 @@ const Visualization: React.FC = () => {
             <p className="text-center text-gray-400">Memuat data...</p>
           ) : (
             <ResponsiveContainer width="100%" height={420}>
-              <LineChart data={data}>
+              <LineChart key={chartKey} data={animatedData}>
                 <CartesianGrid strokeDasharray="4 4" stroke="#374151" />
 
                 <XAxis
@@ -103,22 +195,28 @@ const Visualization: React.FC = () => {
                 <Line
                   type="monotone"
                   dataKey="kenaikan_tahunan_mm"
-                  stroke="#22c55e"          // HIJAU TERANG
+                  stroke="#22c55e"
                   strokeWidth={2}
                   dot={{ r: 3 }}
                   activeDot={{ r: 5 }}
                   name="Kenaikan Tahunan (mm/tahun)"
+                  isAnimationActive
+                  animationDuration={1600}
+                  animationEasing="ease-out"
                 />
 
                 {/* 🔹 Kumulatif */}
                 <Line
                   type="monotone"
                   dataKey="kenaikan_kumulatif_mm"
-                  stroke="#3b82f6"          // BIRU TUA
+                  stroke="#3b82f6"
                   strokeWidth={3}
                   dot={{ r: 4 }}
                   activeDot={{ r: 6 }}
                   name="Kenaikan Kumulatif (mm)"
+                  isAnimationActive
+                  animationDuration={2200}
+                  animationEasing="ease-in-out"
                 />
               </LineChart>
             </ResponsiveContainer>
